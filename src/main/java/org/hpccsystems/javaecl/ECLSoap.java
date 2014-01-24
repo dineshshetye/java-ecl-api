@@ -6,6 +6,7 @@ package org.hpccsystems.javaecl;
 import java.net.*;
 import java.io.*;
 import java.util.*;
+import org.apache.commons.codec.binary.Base64; 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
@@ -28,29 +29,30 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import java.util.ArrayList;
+
+import javax.net.ssl.HttpsURLConnection;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
+
+import org.apache.commons.io.IOUtils;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 import org.w3c.dom.Node;
+
+import org.hpccsystems.javaecl.SSLUtilities;
 
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 //import org.xml.sax.InputSource;
 
 
-
-
-
-
-        
         /**
  *
  * @author ChambeJX
  */
 public class ECLSoap {
-    
+	boolean isLogonFail = false;
     private String hostname = "";
     private int port = 8010;
     
@@ -61,7 +63,11 @@ public class ECLSoap {
     private String maxReturn = "";
     private String cluster = "";
     private boolean includeML = false;
-    
+    private boolean isHttps=false;
+    private boolean allowInvalidCerts=false;
+
+
+	private int maxRunTime=300; //in seconds, 300 is server default;
     private String outputName = "";
     
     private String wuid = "";
@@ -70,6 +76,7 @@ public class ECLSoap {
     
     private int errorCount = 0;
     private int warningCount = 0;
+    private String errorText = "";
     
     private String user = "";
     private String pass = "";
@@ -77,10 +84,50 @@ public class ECLSoap {
     private String SALTPath = "";
     private boolean includeSALT = false;
     private String saltLib = "";
-
-
+    private ArrayList<String[]> compileFlagsAL = new ArrayList();
+    private String baseFileName = "SpoonEclCode.ecl";
+    private String baseCheckFileName = "CheckSpoonEclCode.ecl";
     
-    public String getMaxReturn() {
+    
+    public String getBaseCheckFileName() {
+		return baseCheckFileName;
+	}
+
+	public void setBaseCheckFileName(String baseCheckFileName) {
+		this.baseCheckFileName = baseCheckFileName;
+	}
+
+	public String getBaseFileName() {
+		return baseFileName;
+	}
+
+	public void setBaseFileName(String baseFileName) {
+		this.baseFileName = baseFileName;
+	}
+
+	public ArrayList getCompileFlagsAL() {
+		return compileFlagsAL;
+	}
+    public boolean isHttps() {
+		return isHttps;
+	}
+
+	public void setHttps(boolean isHttps) {
+		this.isHttps = isHttps;
+	}
+
+	public boolean isAllowInvalidCerts() {
+		return allowInvalidCerts;
+	}
+
+	public void setAllowInvalidCerts(boolean allowInvalidCerts) {
+		this.allowInvalidCerts = allowInvalidCerts;
+	}
+	public void setCompileFlagsAL(ArrayList compileFlagsAL) {
+		this.compileFlagsAL = compileFlagsAL;
+	}
+
+	public String getMaxReturn() {
 		return maxReturn;
 	}
 
@@ -158,6 +205,10 @@ public class ECLSoap {
 
     public void setHostname(String hostname) {
         this.hostname = hostname;
+        if (hostname.toLowerCase().contains("https://"))
+        {
+        	this.isHttps=true;
+        }
     }
 
     public int getPort() {
@@ -228,22 +279,35 @@ public class ECLSoap {
 	 //end getters and setters
 	
 	
+	
+	
     public ECLSoap() {
-        this.tempDir = System.getProperty("java.io.tmpdir");
+    	if (System.getProperty("os.name").startsWith("Windows")) {
+    		this.tempDir = System.getProperty("java.io.tmpdir");
+    		if(!(tempDir.endsWith("/") || tempDir.endsWith("\""))){
+    			this.tempDir += "\\";
+        	}
+        } else {
+        	this.tempDir = System.getProperty("java.io.tmpdir") + "/";
+        } 
+    	
+        
         //System.out.println("OS Temp Dir is: " + tempDir);
     }
-    public String syntaxCheck(String ecl){
+    public String getErrorText() {
+		return errorText;
+	}
+
+	public void setErrorText(String errorText) {
+		this.errorText = errorText;
+	}
+
+	public String syntaxCheck(String ecl){
         String res = "";
         int test = 0;
-        String inFile = this.outputName + "CheckSpoonEclCode.ecl";
-
-         //write ecl to file
-        
-        //String inFilePath = "\"" + eclccInstallDir + inFile + "\"";
-        String inFilePath = "\"" + this.tempDir + inFile + "\"";
+        String inFile = this.outputName + baseCheckFileName;
+        String inFilePath = this.tempDir + inFile;
          try {
-            //System.out.println("Created File (synTaxCheck): " + eclccInstallDir + inFile);
-            //BufferedWriter out = new BufferedWriter(new FileWriter(eclccInstallDir + inFile));
             System.out.println("Created File (synTaxCheck): " + this.tempDir + inFile);
             BufferedWriter out = new BufferedWriter(new FileWriter(this.tempDir + inFile));
             out.write(ecl);
@@ -255,90 +319,95 @@ public class ECLSoap {
         }   
          //System.out.println("check point");
         try{
-            //call eclcc
-            //need to modify -I to include path...
-            String include = "";
+            String logFile = this.tempDir + this.outputName.replace(' ', '_') + "_syntax_log.log";
+            String c = eclccInstallDir;
+            if (System.getProperty("os.name").startsWith("Windows")) {
+                        c += "eclcc.exe";
+            }else{
+                        c += "eclcc";
+            }
+            String paramSalt = "";
+            
+
+            System.out.println("_________________________ECLCC SYNTAX CHECK_______________________________");
+
+            ArrayList<String> paramsAL = new ArrayList<String>();
+            paramsAL.add(c);
+            paramsAL.add("-c");
+            paramsAL.add("-syntax");
+            
+            if(this.includeSALT){
+                paramSalt = "-legacy";
+                paramsAL.add(paramSalt);
+            }
+            paramsAL.add("--logfile");
+            paramsAL.add(logFile);
+            
             if(this.includeML){
-                include = " -I \"" + this.mlPath +"\"";
+            	paramsAL.add("-I");
+            	paramsAL.add(this.mlPath);
             }
-            
             if(this.includeSALT){
-                include += " -I \"" + this.SALTPath +"\"";
+            	paramsAL.add("-I");
+            	paramsAL.add(this.SALTPath);
             }
-            
             if(this.saltLib != null && !this.saltLib.equals("")){
-                include += " -I \"" + this.saltLib +"\"";
+            	paramsAL.add("-I");
+            	paramsAL.add(this.saltLib);
             }
-            
-            String logFile = "--logfile \"" + this.tempDir + this.outputName.replace(' ', '_') + "_syntax_log.log\" ";
-           // System.out.println("LogFIle: " + this.tempDir + this.outputName + "_syntax_log.log");
-            String c = "\"" + eclccInstallDir + "eclcc.exe\" ";
-            if(this.includeSALT){
-            	c += "-legacy ";
+            if(compileFlagsAL != null && compileFlagsAL.size() > 0){
+            	for(int i = 0; i<compileFlagsAL.size(); i++){
+            		if(compileFlagsAL.get(i).length == 2){
+            			if(!compileFlagsAL.get(i)[0].equals("")){
+            				paramsAL.add(compileFlagsAL.get(i)[0]);
+            			}
+            			if(!compileFlagsAL.get(i)[1].equals("")){
+            				paramsAL.add(compileFlagsAL.get(i)[1]);
+            			}
+            		}
+            	}
             }
-            c += logFile + "-c -syntax" + include + " " + inFilePath;
-
-
-            ProcessBuilder pb = new ProcessBuilder(c);
+            paramsAL.add(inFilePath);
+            String [] params = new String[paramsAL.size()];
+            paramsAL.toArray(params);
+            ProcessBuilder pb = new ProcessBuilder(params);
+            System.out.println("----------Syntax Check-----------");
+            System.out.println("---------------------");
+            System.out.println(pb.command().toString());
+           
             pb.redirectErrorStream(true); // merge stdout, stderr of process
-            //System.out.println("Start Process Builder");
+            System.out.println(pb.command().toString());
+	    	boolean pathExists = (new File(eclccInstallDir)).exists();
+	    	if(!pathExists){
+	    		errorCount++;
+	    		res += "Unable to locate the ecl compiler, Check Global Variables\r\n";
+	    		errorText += "Unable to locate the ecl compiler, Check Global Variables\r\n";
+	    	}
             File path = new File(eclccInstallDir);
-            //System.out.println("1");
             pb.directory(path);
-           // System.out.println("2");
             Process p = pb.start();
-            //System.out.println("3");
-            
-           // int pStatus = p.waitFor();
-           // System.out.println("4");
-            
-           // System.out.println("InputStream");
             InputStream is = p.getInputStream();
             InputStreamReader isr = new InputStreamReader(is);
             BufferedReader br = new BufferedReader(isr);
             String line;
-            
-           // System.out.println("STATUS: " + pStatus);
             while((line = br.readLine()) != null){
-            	//System.out.println("#####<InputStream> "+line);
-                //res += "<InputStream> " + line+"\r\n";
                 res += cleanError(line)+"\r\n";
+                errorText += cleanError(line)+"\r\n";
             }
-            System.out.println("Finished InputStream");
-            
+             
             InputStream iError = p.getErrorStream();
             InputStreamReader isrError = new InputStreamReader(iError);
             BufferedReader brErr = new BufferedReader(isrError);
             String lineErr;
             while((lineErr = brErr.readLine()) != null){
-                //System.out.println("#####<ErrorStream> "+lineErr);
-                //res += "<ErrorStream> " + lineErr+"\r\n";
+
                 res += cleanError(lineErr)+"\r\n";
+                errorText += cleanError(lineErr)+"\r\n";
             }
-            //System.out.println("Finished ErrorStream");
-                        
-           
             
-            /*
-
-            InputStream is2 = p.getErrorStream();
-            int pStatus2 = p.waitFor();
-            InputStreamReader isr2 = new InputStreamReader(is2);
-            BufferedReader br2 = new BufferedReader(isr2);
-            String line2;
-
-            while((line2 = br2.readLine()) != null){
-                //System.out.println("****"+line2);
-                res += line2 +"\r\n";
-            }
-			*/
-
-
-            //deleteFile(eclccInstallDir+inFile);
-            deleteFile(this.tempDir+inFile);
+            //deleteFile(this.tempDir+inFile);
             
-          //  System.out.println("Finished compile check");
-            
+ 
         }catch (Exception e){
             System.out.println(e.toString());
             e.printStackTrace();
@@ -380,7 +449,7 @@ public class ECLSoap {
 	            	String ec = matcher.group();
 	            	
 	            	try{
-	                 	this.errorCount = Integer.parseInt(ec);
+	                 	this.errorCount = Integer.parseInt(ec) + this.errorCount;
 	                }catch (Exception ee){
 	                 	
 	                }
@@ -407,7 +476,7 @@ public class ECLSoap {
 	            	String wc = matcher.group();
 	            	
 	            	try{
-	                	this.warningCount = Integer.parseInt(wc);
+	                	this.warningCount = Integer.parseInt(wc) + this.warningCount;
 	                }catch (Exception we){
 	                 	
 	                }
@@ -513,7 +582,11 @@ public class ECLSoap {
     }
      * 
      */
-    
+    public static final String UTF8_BOM = "\uFEFF";
+    private static String removeUTF8BOM(String s) {
+        s = s.replace(UTF8_BOM, "");
+        return s;
+    }
     /*isComplete
      * 
      * @accepts String
@@ -524,62 +597,94 @@ public class ECLSoap {
      */
     public boolean isComplete(String wuid){
         boolean complete = false;
+        boolean isError = false;
+        int errorCnt = 0;
         String xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
                 + "<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
                 + "<soap:Body>"
                 + "<WUWaitComplete xmlns=\"urn:hpccsystems:ws:wsworkunits\">"
                 + "<Wuid>"+wuid+"</Wuid>"
-                + "<Wait>500000</Wait>"
+                + "<Wait>9000</Wait>"
                 + "<ReturnOnWait>true</ReturnOnWait>"
                 + "</WUWaitComplete>"
                 + "</soap:Body>"
                 + "</soap:Envelope>";
         String path = "/WsWorkunits/WUInfo";
-        InputStream is = this.doSoap(xml, path);        
-        try{
-            DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
-            DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
-            Document doc = dBuilder.parse(is);
+             
+        while(!complete && !isError && errorCnt<10){
+        	 
+	        try{
+	        	InputStream is = this.doSoap(xml, path);
+	            DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+	            DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+	            
+	            StringWriter writer = new StringWriter();
+	            IOUtils.copy(is, writer,"UTF-8");
+	            String theXML = writer.toString();
+	            theXML = removeUTF8BOM(theXML);
 
-            doc.getDocumentElement().normalize();
-
-            NodeList nList = doc.getElementsByTagName("WUWaitResponse");
-            //System.out.println("-----------PARSE- " + nList.getLength() + " -----------");
-
-                    for (int temp = 0; temp < nList.getLength(); temp++) {
-                        //System.out.println("-----------"+temp+"------------");
-                       Node nNode = nList.item(temp);
-                       if (nNode.getNodeType() == Node.ELEMENT_NODE) {
-
-                          Element eElement = (Element) nNode;
-                          NodeList nl = eElement.getChildNodes();
-
-                          for (int temp1 = 0; temp1 < nl.getLength(); temp1++) {
-                              System.out.append("parsing node --");
-                              Node node = nl.item(temp1);
-                              Element elem = (Element) node;
-                              if((node.getNodeName()).equals("StateID")){
-                                  String val = getTagValue(node.getNodeName(), eElement);
-                               // System.out.println("Node Value: " + val);
-                                if(val.equals("3")){
-                                    complete = true;
-                                }else if(val.equals("1") || val.equals("2") || val.equals("11")){
-                                    //Thread.sleep(500);
-                                    complete = isComplete(wuid);
-                                }else{
-                                    complete = false;
-                                }
-                              }
-
-                          }
-
-
-                       }
-                    }
-        
-        }catch (Exception e){
-            System.out.println(e);
-            e.printStackTrace();
+	            /*DEGUG STATMENTS
+	             System.out.println("loop for complete check");
+	             System.out.println("|" +theXML + "|");
+	             System.out.println("test:" + is.toString());
+	             System.out.println("-------------------------");
+	             System.out.println("|" +theXML + "|");
+	             System.out.println("-------------------------");
+	            */
+	            InputStream isClean = new ByteArrayInputStream(theXML.getBytes());
+	            Document doc = dBuilder.parse(isClean);
+	            
+	            is.close();
+	            doc.getDocumentElement().normalize();
+	
+	            NodeList nList = doc.getElementsByTagName("WUWaitResponse");
+	            //System.out.println("-----------PARSE- " + nList.getLength() + " -----------");
+	
+	                    for (int temp = 0; temp < nList.getLength(); temp++) {
+	                        //System.out.println("-----------"+temp+"------------");
+	                       Node nNode = nList.item(temp);
+	                       if (nNode.getNodeType() == Node.ELEMENT_NODE) {
+	
+	                          Element eElement = (Element) nNode;
+	                          NodeList nl = eElement.getChildNodes();
+	
+	                          for (int temp1 = 0; temp1 < nl.getLength(); temp1++) {
+	                             // System.out.append("parsing node --");
+	                              Node node = nl.item(temp1);
+	                              Element elem = (Element) node;
+	                              if((node.getNodeName()).equals("StateID")){
+	                                  String val = getTagValue(node.getNodeName(), eElement);
+	                                System.out.println("Results Check Value: " + val);
+	                                if(val.equals("3")){
+	                                    complete = true;
+	                                }else if(val.equals("4")){
+	                                		System.out.println("Error State Reached");
+		                                    complete = false;
+		                                    isError = true;
+		                                    //error state
+	                                }else if(val.equals("1") || val.equals("2") || val.equals("11")){
+	                                	System.out.println("Recursion Step:::::");
+	                                	 Thread.sleep(1500);
+	                                    complete = isComplete(wuid);
+	                                }else{
+	                                	Thread.sleep(1500);
+	                                    complete = false;
+	                                }
+	                              }
+	
+	                          }
+	                          
+	
+	                       }
+	                    }
+	        is.close();
+	        }catch (Exception e){
+	        	System.out.println("---------------Error-ECLSoap:doSoap---------------");
+	            System.out.println(e);
+	            e.printStackTrace();
+	            isError = true;
+	            errorCnt++;
+	        }	
         }
         return complete;
     }
@@ -608,7 +713,7 @@ public class ECLSoap {
                 "</WUResult>"+
                 "</soap:Body>"+
                 "</soap:Envelope>";
-        
+        //System.out.println("XML for Resutls:" + xml);
         //String path = "/WsWorkunits/WUInfo";
         String path = "/WsWorkunits/WUResult?ver_=1.38";
         InputStream is = this.doSoap(xml, path);
@@ -636,13 +741,25 @@ public class ECLSoap {
              "<WUCreateAndUpdate xmlns=\"urn:hpccsystems:ws:wsworkunits\">" + 
                 "<Jobname>" + this.jobName + "</Jobname>" + 
                 "<QueryText>" + query + "</QueryText>" + 
+                "<SubmitID>" + user + "</SubmitID>" + 
                " <ApplicationValues>" + 
                    "<ApplicationValue>" + 
-                      "<Application>org.hpccsystems.eclide</Application>" + 
+                      "<Application>org.hpccsystems.spoon</Application>" + 
                       "<Name>path</Name>" +
-                      "<Value>/HelloWorld/HelloWorld.ecl</Value>" + 
+                      "<Value>/Spoon" + outputName + "/Spoon" + outputName + ".ecl</Value>" + 
                    "</ApplicationValue>" + 
+                   	"<ApplicationValue>" + 
+                   		"<Application>org.hpccsystems.spoon</Application>" + 
+                   		"<Name>owner</Name>" +
+                   		"<Value>" + user + "</Value>" + 
+                   	"</ApplicationValue>" + 
                 "</ApplicationValues>" + 
+                "<DebugValues>" +
+                	"<DebugValue>" +
+                		"<Name>created_for</Name>" +
+                		"<Value>" + user + "</Value>" +
+                	"</DebugValue>" +
+                "</DebugValues>" +
              "</WUCreateAndUpdate>" + 
           "</soapenv:Body>" + 
         "</soapenv:Envelope>";
@@ -674,6 +791,7 @@ public class ECLSoap {
                   "<soapenv:Body>"+
                      "<WUSubmit xmlns=\"urn:hpccsystems:ws:wsworkunits\">"+
                         "<Wuid>" + wuid + "</Wuid>"+
+                        //"<MaxRunTime>" + maxRunTime + "<MaxRunTime>" +
                         "<Cluster>" + this.cluster + "</Cluster>"+
                      "</WUSubmit>"+
                   "</soapenv:Body>"+
@@ -681,6 +799,8 @@ public class ECLSoap {
         
         String path = "/WsWorkunits/WUSubmit";
         InputStream is2 = this.doSoap(xml, path);
+        
+        //need to check for errors here
     }
     
     /*
@@ -1023,7 +1143,7 @@ public class ECLSoap {
                       NodeList nl = eElement.getChildNodes();
                       
                       for (int temp1 = 0; temp1 < nl.getLength(); temp1++) {
-                          System.out.append("parsing node --");
+                          //System.out.append("parsing node --");
                           Node node = nl.item(temp1);
                           Element elem = (Element) node;
                           if(node.getNodeName() != null)
@@ -1080,45 +1200,102 @@ public class ECLSoap {
     public InputStream doSoap(String xmldata, String path){
        ArrayList response = new ArrayList();
        String xml = "";
-       try {
-
-
-    	   	//System.out.println("ECLSoap doSoap -- User:"+user+ " " + "Pass:" + pass);
-            
-    	   	ECLAuthenticator eclauth = new ECLAuthenticator(user,pass);
-    	   	
-    	   	
-    	   	Authenticator.setDefault(eclauth);
-             
-          
-            //String encoding = new sun.misc.BASE64Encoder().encode ((user+":"+pass).getBytes());
-            String host = "http://"+hostname+":"+port+path;
-            //System.out.println("HOST: " + host);
-            URL url = new URL(host);
-            
-            
-             // Send data
-            URLConnection conn = url.openConnection();
-            conn.setDoOutput(true);
-            //conn.setRequestProperty("Authorization","Basic "+encoding);
-            conn.setRequestProperty("Post", path + " HTTP/1.0");
-            conn.setRequestProperty("Host", hostname);
-            conn.setRequestProperty("Content-Length", ""+xmldata.length() );
-            conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
-
-            OutputStreamWriter wr = new OutputStreamWriter(conn.getOutputStream());
-            wr.write(xmldata);
-            wr.flush();
-            //wr.close();
-            
-             
-            return conn.getInputStream();
-            
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+       URLConnection conn = null;
+       boolean isError = false;
+       boolean isSuccess = false;
+      
+       int errorCnt = 0;
+       InputStream is = null;
+       while(errorCnt < 5 && !isSuccess && !isLogonFail){
+	       try {
+	
+	
+	    	   	//System.out.println("ECLSoap doSoap -- User:"+user+ " " + "Pass:" + pass);
+	            
+	    	   	ECLAuthenticator eclauth = new ECLAuthenticator(user,pass);
+	    	   	
+	    	   	
+	    	   	Authenticator.setDefault(eclauth);
+	             
+	          
+	            //String encoding = new sun.misc.BASE64Encoder().encode ((user+":"+pass).getBytes());
+	    	   	String host = "http://"+hostname+":"+port+path;
+	    	   	if (isHttps) {
+	    	   		host = "https://"+hostname+":"+port+path;
+	    	   	}
+	            
+	    	   	if (isHttps && allowInvalidCerts)
+				{
+						SSLUtilities.trustAllHttpsCertificates();
+						SSLUtilities.trustAllHostnames();
+				} 
+	    	   	//System.out.println("HOST: " + host);
+	            URL url = new URL(host);
+	            
+	            
+	             // Send data
+	            conn = url.openConnection();
+	            conn.setDoOutput(true);
+	            //added back in since Authenticator isn't allways called and the user wasn't passed if the server didn't require auth
+	            if(!user.equals("")){
+	            	String authStr = user + ":" + pass;
+	            	//System.out.println("USER INFO: " + authStr);
+	           	String encoded = new String(Base64.encodeBase64(authStr.getBytes()));
+	            	
+	            	
+	            	conn.setRequestProperty("Authorization","Basic "+encoded);
+	            }
+	            
+	            conn.setRequestProperty("Post", path + " HTTP/1.0");
+	            conn.setRequestProperty("Host", hostname);
+	            conn.setRequestProperty("Content-Length", ""+xmldata.length() );
+	            conn.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"");
+	
+	            OutputStreamWriter wr = new OutputStreamWriter(conn.getOutputStream());
+	            wr.write(xmldata);
+	            wr.flush();
+	            //wr.close();
+	           // if(conn.get)
+	            if(conn instanceof HttpURLConnection){
+	            	HttpURLConnection httpConn = (HttpURLConnection)conn;
+	            	if (isHttps) {
+	            		httpConn=(HttpsURLConnection) conn;
+	            	}
+	            	int code = httpConn.getResponseCode();
+	            	System.out.println("Connection code: " + code);
+	            	if(code == 200){
+	            		is =  conn.getInputStream();
+	            		isSuccess = true;
+	            		System.out.println("Connection success code 200 ");
+	            	}else if (code == 401){
+	            		isSuccess = false;
+	            		isLogonFail = true;
+	            		System.out.println("Permission Denied");
+	            	} else if (code==-1) {
+	            		isSuccess=false;
+	            	}
+	            }
+	            //return conn.getInputStream();
+	            
+	        } catch (Exception e) {
+	            e.printStackTrace();
+	            isSuccess=false;
+	        }finally{
+	        	if(conn != null){
+	        		
+	        	}
+	        }
+	        if(!isSuccess){
+	        	errorCnt++;
+	        	try{
+	        		Thread.sleep(3500);
+	        	}catch (Exception e){
+	        		System.out.println("couldn't sleep thread");
+	        	}
+	        }
+       }
        // return new HashMap<String, String>();
-          return null;
+          return is;
     }
     
 
@@ -1134,23 +1311,16 @@ public class ECLSoap {
      * 
      */
     private String compileECL(String ecl){
-        String inFile =  this.outputName + "SpoonEclCode.ecl";
-        String outFile = this.outputName + "SpoonEclOut.ecl";
+    	
+        String inFile =  this.outputName + baseFileName;
+        String outFile = this.outputName + baseFileName;
        
-         //write ecl to file
         
-        //String inFilePath = "\"" + eclccInstallDir + inFile + "\"";
-        //String outFilePath = "\"" + eclccInstallDir + outFile + "\"";
-        
-        String inFilePath = "\"" + this.tempDir + inFile + "\"";
-        String outFilePath = "\"" + this.tempDir + outFile + "\"";
+        String inFilePath = this.tempDir + inFile;
+        String outFilePath = this.tempDir + outFile;
         
         
         try {
-            //System.out.println("Created File (compileECL): " + eclccInstallDir + inFile);
-            //BufferedWriter out = new BufferedWriter(new FileWriter(eclccInstallDir + inFile));
-            
-            //System.out.println("Created File (compileECL): " + this.tempDir + inFile);
             BufferedWriter out = new BufferedWriter(new FileWriter(this.tempDir + inFile));
             out.write(ecl);
             out.close();
@@ -1160,35 +1330,84 @@ public class ECLSoap {
         }   
         
         try{
-            //call eclcc
-            //need to modify -I to include path...
-            String include = "";
-            if(this.includeML){
-                include = " -I \"" + this.mlPath +"\"";
+
+            
+            String logFile = this.tempDir + this.outputName + "_log.log";
+            
+            String c = eclccInstallDir;
+            if (System.getProperty("os.name").startsWith("Windows")) {
+                c += "eclcc.exe";
             }else{
-            	//System.out.println("NO ML LIBRARY INCLUDED!");
+                c += "eclcc";
             }
+            String paramSalt = "";
+
+            System.out.println("_________________________ECLCC_______________________________");
             
-          //System.out.println("_________________________ECLCC_______________________________");
+            boolean pathExists = (new File(eclccInstallDir)).exists();
+	    	if(!pathExists){
+	    		errorCount++;
+	    		errorText += "Unable to locate the ecl compiler, Check Global Variables\r\n";
+	    	}
+	    	
+            ArrayList<String> paramsAL = new ArrayList<String>();
+            paramsAL.add(c);
+            paramsAL.add("-E");
+            paramsAL.add("-v");
+            
             if(this.includeSALT){
-                include = " -I \"" + this.SALTPath +"\"";
+                paramSalt += "-legacy";
+                paramsAL.add(paramSalt);
             }
+            paramsAL.add("--logfile");
+            paramsAL.add(logFile);
             
+            if(this.includeML){
+            	paramsAL.add("-I");
+            	paramsAL.add(this.mlPath);
+            }
+            if(this.includeSALT){
+            	paramsAL.add("-I");
+            	paramsAL.add(this.SALTPath);
+            }
             if(this.saltLib != null && !this.saltLib.equals("")){
-                include += " -I \"" + this.saltLib +"\"";
+            	paramsAL.add("-I");
+            	paramsAL.add(this.saltLib);
             }
-            
-            
-            String logFile = "--logfile " + this.tempDir + this.outputName + "_log.log ";
-            String c = "\"" + eclccInstallDir + "eclcc.exe\" ";
-            if(this.includeSALT){
-            	c += "-legacy ";
+            //System.out.println("Check for Custom Flags | ECLSoap ");
+           // System.out.println("compileFlagsAL size eclsoap: " + compileFlagsAL.size());
+            if(compileFlagsAL != null && compileFlagsAL.size() > 0){
+            	//System.out.println(" -- has Custom Flags | parsing for process builder -- ");
+            	for(int i = 0; i<compileFlagsAL.size(); i++){
+            		//System.out.println(" -- loop iteration " + i);
+            		if(compileFlagsAL.get(i).length == 2){
+            			//System.out.println(" -- -- has array of 2");
+            			if(!compileFlagsAL.get(i)[0].equals("")){
+            				//System.out.println(" -- -- -- Key: " + compileFlagsAL.get(i)[0]);
+            				paramsAL.add(compileFlagsAL.get(i)[0]);
+            			}
+            			if(!compileFlagsAL.get(i)[1].equals("")){
+            				//System.out.println(" -- -- -- Val: " + compileFlagsAL.get(i)[1]);
+            				paramsAL.add(compileFlagsAL.get(i)[1]);
+            			}
+            		}
+            	}
             }
-            c += logFile + "-E -v" + include + " -o " + outFilePath + " " + inFilePath;
+            //"-o", outFilePath, inFilePath
+            paramsAL.add("-o");
+            paramsAL.add(outFilePath);
+            paramsAL.add(inFilePath);
+            String [] params = new String[paramsAL.size()];
+            paramsAL.toArray(params);
+            //String[] params = (String[]) paramsAL.toArray();
+            ProcessBuilder pb = new ProcessBuilder(params);
             
-           System.out.println("_________________________ECLCC_______________________________");
-            System.out.println(c);
-            ProcessBuilder pb = new ProcessBuilder(c);
+           // System.out.println("+++++++++++++++++++++");
+           // System.out.println("+++++++++++++++++++++");
+           // System.out.println("+++++++++++++++++++++");
+            //System.out.println("++++++++++Compile ECLSOAP+++++++++++");
+           // System.out.println("+++++++++++++++++++++");
+            System.out.println(pb.command().toString());
             pb.redirectErrorStream(true); // merge stdout, stderr of process
 
             File path = new File(eclccInstallDir);
@@ -1201,32 +1420,25 @@ public class ECLSoap {
             String lineErr;
             while((lineErr = brErr.readLine()) != null){
                 //System.out.println("#####"+lineErr);
-                
+                errorText += lineErr + "\r\n";
             }
             
             InputStream is = p.getInputStream();
             InputStreamReader isr = new InputStreamReader(is);
             BufferedReader br = new BufferedReader(isr);
             String line;
-            
-
-            //System.out.println(c);
-            
 
             while((line = br.readLine()) != null){
                 //System.out.println(line);
+            	
             }
 
             
-            //String compiled_ecl = openFile(eclccInstallDir+outFile);
-            //deleteFile(eclccInstallDir+outFile);
-            //deleteFile(eclccInstallDir+inFile);
+
             String compiled_ecl = openFile(this.tempDir+outFile);
-            deleteFile(this.tempDir+outFile);
-            deleteFile(this.tempDir+inFile);
+            //deleteFile(this.tempDir+outFile);
+            //deleteFile(this.tempDir+inFile);
             
-            //System.out.println("finished compileECL");
-            //load file as string
             return compiled_ecl;
             
         }catch (Exception e){
@@ -1236,6 +1448,109 @@ public class ECLSoap {
         
         return null;
         //return ecl;
+    }
+    
+    public static void main(String[] args){
+    	System.out.println("Test Compile");
+    	ECLSoap es = new ECLSoap();
+    	String eclccInstallDir = "C:\\Program Files\\HPCC Systems\\HPCC\\bin\\ver_3_0\\";
+    	String tempDir = "";
+    	if (System.getProperty("os.name").startsWith("Windows")) {
+    		tempDir = System.getProperty("java.io.tmpdir");
+        } else {
+        	tempDir = System.getProperty("java.io.tmpdir") + "/";
+        } 
+    	String outputName = "Execute";
+   	 	String inFile =  outputName + es.baseFileName;
+   	 	String outFile = outputName + es.baseFileName;
+
+   	 	String inFilePath = tempDir + inFile;
+   	 	String outFilePath = tempDir + outFile;
+     
+   	 	//C:\DOCUME~1\CHAMBE~1.RIS\LOCALS~1\Temp\ExecuteSpoonEclCode.ecl
+    	   try{
+               //call eclcc
+               //need to modify -I to include path...
+               String includeML = "";
+               String includeSalt = "";              
+               String includeSaltLib = "";
+               
+               
+               
+               String logFile = tempDir + outputName + "_log.log";
+             
+             
+               String c = eclccInstallDir;
+               if (System.getProperty("os.name").startsWith("Windows")) {
+                   // use eclcc.exe
+                           c += "eclcc.exe";
+               }else{
+                           c += "eclcc";
+                           //logFile = "";//don’t use log file for linux
+               }
+               String paramSalt = "";
+               
+               //c += logFile + "-E -v" + include + " -o " + outFilePath + " " + inFilePath;
+               
+               //System.out.println("_________________________ECLCC_______________________________");
+
+               ArrayList<String> al = new ArrayList<String>();
+               al.add(c);
+               al.add("-E");
+               al.add("-v");
+               al.add("--logfile");
+               al.add(logFile);
+               al.add("-o");
+               al.add(outFilePath);
+               al.add(inFilePath);
+               String [] x = new String[al.size()];
+               al.toArray(x);
+               ProcessBuilder pb = new ProcessBuilder(x);
+               System.out.println(pb.command().toString());
+               pb.redirectErrorStream(true); // merge stdout, stderr of process
+
+               File path = new File(eclccInstallDir);
+               pb.directory(path);
+               Process p = pb.start();
+               
+               InputStream iError = p.getErrorStream();
+               InputStreamReader isrError = new InputStreamReader(iError);
+               BufferedReader brErr = new BufferedReader(isrError);
+               String lineErr = "";
+               while((lineErr = brErr.readLine()) != null){
+                   System.out.println("#####"+lineErr);
+                   
+               }
+               
+              
+               
+               InputStream is = p.getInputStream();
+               InputStreamReader isr = new InputStreamReader(is);
+               BufferedReader br = new BufferedReader(isr);
+               String line;
+               
+
+               //System.out.println(c);
+               
+
+               while((line = br.readLine()) != null){
+                   System.out.println(line);
+               }
+               
+               
+               
+           }catch (Exception e){
+               System.out.println(e.toString());
+               e.printStackTrace();
+           }
+    	   
+    	   
+    	   es.setCluster("mythor");
+    	   es.setHostname("10.239.227.6");
+    	   es.setEclccInstallDir(eclccInstallDir);
+    	   es.setJobName("test");
+    	   es.executeECL("output('hi');");
+    	   
     }
     
     /*
@@ -1278,7 +1593,15 @@ public class ECLSoap {
         return fileData.toString();
     }
 
-    /*
+    public int getMaxRunTime() {
+		return maxRunTime;
+	}
+
+	public void setMaxRunTime(int maxRunTime) {
+		this.maxRunTime = maxRunTime;
+	}
+
+	/*
      * ECLAuthenticator
      * 
      * Hnadles the http authentication for the soap request
@@ -1296,7 +1619,7 @@ public class ECLSoap {
         public PasswordAuthentication getPasswordAuthentication() {
             // I haven't checked getRequestingScheme() here, since for NTLM
             // and Negotiate, the usrname and password are all the same.
-            System.err.println("Feeding username and password for " + getRequestingScheme() + " " + user + ":" + pass +"@"+hostname);
+           // System.err.println("Feeding username and password for " + getRequestingScheme() + " " + user + ":" + pass +"@"+hostname);
             PasswordAuthentication p = new PasswordAuthentication(user, pass.toCharArray());
            // System.out.println("_________Hostname_______"+hostname);
             return p;

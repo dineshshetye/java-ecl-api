@@ -61,8 +61,17 @@ public class EclDirect {
     private String resName = "";
 
     private ArrayList<String> resultNames = new ArrayList();
+    private ArrayList compileFlagsAL = new ArrayList();
     
-    public String getUserName() {
+    public ArrayList getCompileFlagsAL() {
+		return compileFlagsAL;
+	}
+
+	public void setCompileFlagsAL(ArrayList compileFlagsAL) {
+		this.compileFlagsAL = compileFlagsAL;
+	}
+
+	public String getUserName() {
 		return userName;
 	}
 
@@ -389,6 +398,8 @@ public class EclDirect {
         es.setPort(Integer.parseInt(this.serverPort));
         es.setUser(userName);
         es.setPass(password);
+        //System.out.println("CompileFlagAL Size in eclDirect: " + compileFlagsAL.size());
+        es.setCompileFlagsAL(compileFlagsAL);
         if(this.includeML.equals("true")){
             es.setIncludeML(true);
         }else{
@@ -454,18 +465,16 @@ public class EclDirect {
                      
                     if((isError || isWarning) && !error.equals("")){;
                     	this.isValid = false;
-                    	
                     }else{
-                       //System.out.println("if -- executeECL");
                        this.isValid = es.executeECL(eclCode);
                        this.setWuid(es.getWuid());
                          
                        //if not isValid add error
                        if(!this.isValid){
                     	   this.error += "\r\nServer Failed to compile code please refer to ECLWatch and verify your settings\r\n";
+                    	   this.error += es.getErrorText();
                     	   //System.out.println(this.error);
                        }
-                         
                     }
                  }else{
                 	 //System.out.println("else -- executeECL");
@@ -473,12 +482,13 @@ public class EclDirect {
                      this.setWuid(es.getWuid());
                      if(!this.isValid){
                     	 this.error += "\r\nFailed to execute code on the cluster, please verify your settings\r\n";
-                    	 //System.out.println(this.error);
+                    	 this.error += es.getErrorText();
                      }
                  }
        
               }catch (Exception e){
             	  this.error += "Exception occured please verify all settings.";
+            	  this.error += es.getErrorText();
                   e.printStackTrace();
                   this.isValid = false;
                   System.out.println(this.error);
@@ -489,8 +499,23 @@ public class EclDirect {
      }
      
      public boolean writeResultsToFile(String outputDir) throws Exception{
+    	 String slash = "\\";
+    	 if(this.maxReturn.equals("0")){
+    		 return true;
+    	 }
+     	if(outputDir.contains("/") && !outputDir.contains("\\")){
+     		slash = "/";
+     		
+     	}
+     	boolean isSlash = false;
+     	if(outputDir.lastIndexOf("\\") == (outputDir.length()-1) || outputDir.lastIndexOf("/") == (outputDir.length()-1)){
+     		isSlash = true;
+     	}
+     	if(!isSlash){
+ 			outputDir += slash;
+ 		}
     	 boolean isSuccess = true;
-    	 System.out.println("writing files");
+    	// System.out.println("writing files");
     	 ECLSoap es = getECLSoap();
     	 if(isValid){// && dsList != null){
              ArrayList al = this.resultList();
@@ -511,16 +536,25 @@ public class EclDirect {
 
                          if(((Column)al3.get(r)).getName().equals("Name")){
                              resName = ((Column)al3.get(r)).getValue();
+                             if(this.wuid != null && !this.wuid.equalsIgnoreCase("null")){
+	                             InputStream is = es.ResultsSoapCall(this.getWuid(), resName);
+	                             ArrayList results = es.parseResults(is);
+	                             resName = resName.replace(" ", "_");
+	                             String resFileName = outputDir + this.wuid + "_" + resName + ".csv";
+	                             String resFileNameCurr = outputDir +  resName + ".csv";
+	                             //if (System.getProperty("os.name").startsWith("Windows")) {
+	                            //	 resFileName = outputDir + "\\" + resName + ".csv";
+	                             //}
+	                             
+	                             createOutputFile(results,resFileNameCurr,counter);
+	                             createOutputFile(results,resFileName,counter);
+	                             String[] fileInfo = {resName, outputDir, resFileName};
+	                             files.add(fileInfo);
+	                             resultNames.add(resName);
+	                             counter++;
+	                             is.close();
+                         	}
                              
-                             InputStream is = es.ResultsSoapCall(this.getWuid(), resName);
-                             ArrayList results = es.parseResults(is);
-                             resName = resName.replace(" ", "_");
-                             createOutputFile(results,outputDir + "\\" + resName + ".csv",counter);
-                             
-                             String[] fileInfo = {resName, outputDir, outputDir + "\\" + resName + ".csv"};
-                             files.add(fileInfo);
-                             resultNames.add(resName);
-                             counter++;
                          }
                      }
                      
@@ -535,6 +569,7 @@ public class EclDirect {
      }
      
      public void createOutputFile(ArrayList dsList,String fileName, int count){
+    	 System.out.println("Writing File New: " + fileName);
          String outStr = "";
          String header = "";
          String error = "";
